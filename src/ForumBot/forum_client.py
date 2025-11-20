@@ -136,11 +136,12 @@ class ForumClient:
         query = f"{title} {user_question}"
 
         logger.info(f"正在为帖子 {topic_id} 检索相关文档...")
-        related_docs = self._get_response_data(query)
+        related_docs, data = self._get_response_data(query)
 
         result = {
             'topic_id': topic_id,
-            'related_docs': related_docs
+            'related_docs': related_docs,
+            'data': data
         }
 
         if related_docs:
@@ -157,6 +158,8 @@ class ForumClient:
         base_url = self.config['retrieval']['base_url']
         endpoint = self.config['retrieval']['query_endpoint']
         url = f"{base_url}{endpoint}"
+        url_data =  f"{base_url}{endpoint}/data"
+
         # 获取SSL验证设置
         verify_ssl = self.config.get('retrieval', {}).get('verify_ssl', True)
         only_need_prompt = self.config.get('retrieval', {}).get('only_need_prompt', False)
@@ -175,7 +178,10 @@ class ForumClient:
             response = requests.post(url, json=payload, verify=verify_ssl, timeout=600)
             response.raise_for_status()
             result = response.json()
-            return result.get("response")
+            response_data = requests.post(url_data, json=payload, verify=verify_ssl, timeout=600)
+            response_data.raise_for_status()
+            result_data = response_data.json()
+            return result.get("response"), result_data
         except requests.RequestException as e:
             logger.error(f"请求错误: {e}")
             return None

@@ -65,7 +65,7 @@ class ForumMonitor:
         # 获取所有帖子的基本信息
         all_topics = self.forum_client.fetch_all_forum_topics()
         if not all_topics:
-            logger.warning("无法获取帖子数据。")
+            logger.warning("新帖子数据为空。")
             return
 
         # 只需要检查ID是否存在，无需重复检查标签和时间
@@ -106,7 +106,8 @@ class ForumMonitor:
         else:
             logger.info("没有发现新帖子")
 
-    def _generate_related_links(self, search_results, retrieval_docs=None):
+
+    def _generate_related_links(self, search_results, retrieval_data):
         """
                生成相关链接部分
 
@@ -130,69 +131,29 @@ class ForumMonitor:
         # 处理知识图谱链接
         kg_links = []
         kg_topic_ids = []
-        if retrieval_docs:
+        chunk_content = retrieval_data.get('data', '').get('chunks', '')
+        if chunk_content:
             try:
-                # 查找-----Entities(KG)-----和-----Relationships(KG)-----之间的内容
-                entities_start = retrieval_docs.find("-----Entities(KG)-----")
-                relationships_start = retrieval_docs.find("-----Relationships(KG)-----")
 
-                if entities_start != -1 and relationships_start != -1 and entities_start < relationships_start:
-                    # 提取实体部分的内容
-                    entities_content = retrieval_docs[
-                                       entities_start + len("-----Entities(KG)-----"):relationships_start].strip()
-
-                    # 使用正则表达式提取可能的JSON对象
-                    json_objects = re.findall(r'\{[^{}]*"file_path"[^{}]*\}', entities_content)
-                    # 统计每个topic_id的出现次数
-                    topic_id_votes = {}
-
-                    for json_str in json_objects:
-                        try:
-                            obj = json.loads(json_str)
-                            if 'file_path' in obj:
-                                file_path_entry = obj['file_path']
-                                # 分割多个文件路径
-                                paths = file_path_entry.split(';')
-                                for path in paths:
-                                    # 提取文件名中的数字
-                                    match = re.search(r'_(\d+)\.json$', path.strip())
-                                    if match:
-                                        topic_id = int(match.group(1))
-                                        # 只统计数字大于10的主题ID
-                                        if topic_id > 10:
-                                            if topic_id in topic_id_votes:
-                                                topic_id_votes[topic_id] += 1
-                                            else:
-                                                topic_id_votes[topic_id] = 1
-                        except:
-                            continue
-
-                    # 根据得票数排序
-                    sorted_topics = sorted(topic_id_votes.items(), key=lambda x: x[1], reverse=True)
-
-                    # 按照规则选择知识图谱链接:
-                    # 1. 如果前4个都大于6票，则最多保留4个
-                    # 2. 如果大于6票的不足4个，则按实际个数保留
-
-                    # 首先统计得票大于6的链接数量
-                    high_vote_topics = [(topic_id, votes) for topic_id, votes in sorted_topics if
-                                        votes > KG_VOTE_THRESHOLD]
-
-                    if len(high_vote_topics) >= KG_HIGH_VOTE_MIN_COUNT:
-                        # 如果得票大于5的有4个或以上，保留4个
-                        for topic_id, votes in high_vote_topics[:KG_HIGH_VOTE_MIN_COUNT]:
-                            kg_link = f"{forum_base_url}/t/topic/{topic_id}"
-                            kg_links.append(kg_link)
-                            kg_topic_ids.append(topic_id)
-                            added_topic_ids.add(topic_id)
-                    else:
-                        # 如果得票大于6的不足4个，则保留得票数最高的3个（或者有多少保留多少，最多3个）
-                        top_topics = sorted_topics[:KG_TOP_COUNT_IF_LOW_VOTE] if sorted_topics else []
-                        for topic_id, votes in top_topics:
-                            kg_link = f"{forum_base_url}/t/topic/{topic_id}"
-                            kg_links.append(kg_link)
-                            kg_topic_ids.append(topic_id)
-                            added_topic_ids.add(topic_id)
+                for json_str in chunk_content:
+                    try:
+                        if 'file_path' in json_str:
+                            file_path_entry = json_str['file_path']
+                            # 分割多个文件路径
+                            match = re.search(r'_(\d+)(?:_topic)?\.json$', file_path_entry.strip())
+                            if match:
+                                topic_id = int(match.group(1))
+                                if topic_id < 10:
+                                    continue
+                                kg_link = f"{forum_base_url}/t/topic/{topic_id}"
+                                if kg_link not in kg_links:
+                                    kg_links.append(kg_link)
+                                    added_topic_ids.add(topic_id)
+                            # 如果已经收集到足够的链接（总共4个），就停止
+                            if len(kg_links) >= KG_HIGH_VOTE_MIN_COUNT:
+                                break
+                    except Exception as e:
+                        continue
 
             except Exception as e:
                 logger.error(f"处理KG实体链接时出错: {e}")
@@ -244,6 +205,7 @@ class ForumMonitor:
                         break
                 else:
                     full_url = docs_base_url + path
+                    full_url = full_url.replace(' ', '%20')
                     if full_url not in search_links:
                         search_links.append(full_url)
                     # 如果已经收集到足够的链接（总共5个），就停止
@@ -353,7 +315,7 @@ class ForumMonitor:
                     )
                 except Exception as e:
                     logger.error(f"帖子 {topic_id} 检索文档时发生异常: {e}，使用空字符串继续处理")
-                    retrieval_result = {'topic_id': topic_id, 'related_docs': ''}
+                    retrieval_result = {'topic_id': topic_id, 'related_docs': '','data':''}
                     context_data = format_search_results_as_json(search_results)
                     if not search_results:
                         logger.info(f"帖子 {topic_id} 既没有搜索结果也没有检索结果，跳过回答")
@@ -413,7 +375,7 @@ class ForumMonitor:
                     logger.info(f"帖子 {topic_id} 的答案不符合要求，跳过回复")
                     continue
                 # 添加相关链接
-                links_section = self._generate_related_links(search_results, retrieval_result.get('related_docs', ''))
+                links_section = self._generate_related_links(search_results, retrieval_result.get('data', ''))
 
                 # 在 reply_to_topic 调用前添加提示语
                 answer_with_notice = "答案内容由AI生成，仅供参考：\n" + answer + "\n\n" + links_section
